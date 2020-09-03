@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 )
@@ -39,7 +40,7 @@ func decodeInput(input []byte) string {
 	return ret
 }
 
-func setSessionInfo(sessionInfo string, input string, req *http.Request) {
+func setSessionInfo(input string, req *http.Request) {
 	body := make(map[string]interface{})
 
 	body["remoteHost"] = ""
@@ -49,14 +50,21 @@ func setSessionInfo(sessionInfo string, input string, req *http.Request) {
 	body["https"] = false
 	body["browser"] = req.UserAgent()
 
-	bodyJson, err := json.Marshal(body)
+	bodyJSON, err := json.Marshal(body)
 
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
 
-	bodyStr := string(bodyJson)
+	bodyStr := string(bodyJSON)
+	fmt.Printf("Buffer request: %s\n\n", bodyStr)
+	c, err := net.Dial("tcp", "127.0.0.1:4444")
+	if err != nil {
+		log.Panic(err)
+	}
+
+	fmt.Fprintf(c, "%s\t%s\n", input, bodyStr)
 }
 
 func getPOSTHandler() RequestHandler {
@@ -69,13 +77,19 @@ func getPOSTHandler() RequestHandler {
 			log.Fatal(err)
 			return
 		}
-		cookie := req.Header.Get("Cookie")
-		if cookie == "" {
-			cookie = genSessionID()
+		fmt.Println("0")
+		cookie := req.Header["Cookie"]
+		if len(cookie) == 0 { // remember, cookie is []string
+			newCookie := genSessionID()
+			setSessionInfo(newCookie, req)
 			w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
+		} else {
+			fmt.Printf("Cookie: %s\n", cookie)
 		}
+		//cookie[0] = genSessionID()
 
 		decodedInput := decodeInput(input)
+		fmt.Printf("decodedInput: %s\n\n", decodedInput)
 	}
 }
 
@@ -120,11 +134,12 @@ func main() {
 	handlers["POST"] = getPOSTHandler()
 
 	fmt.Println("Starting")
-	http.Handle("/MA", http.FileServer(http.Dir("MA")))
+	http.Handle("/", http.FileServer(http.Dir("public")))
 	http.HandleFunc("/MA/service", func(w http.ResponseWriter, req *http.Request) {
+		fmt.Println("Service")
 		handlers[req.Method](w, req)
 	})
 
-	listenStr := fmt.Sprintf(":%d", ServingPort)
+	//listenStr := fmt.Sprintf(":%d", ServingPort)
 	http.ListenAndServe(":8000", nil)
 }
