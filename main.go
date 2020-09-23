@@ -31,9 +31,9 @@ type SessionJson struct {
 }
 
 type ConnectionMessageHeader struct {
-	length  uint64
-	version int16
-	id      int64
+	length  uint32
+	version int32
+	id      int32
 }
 
 type RequestHandler func(w http.ResponseWriter, req *http.Request)
@@ -48,15 +48,21 @@ func decodeInput(input []byte) string {
 	return ret
 }
 
-func setSessionInfo(input string, req *http.Request) {
+func setSessionInfo(input string, req *http.Request, w http.ResponseWriter) {
 	body := make(map[string]interface{})
+	data := make(map[string]interface{})
 
-	body["remoteHost"] = ""
-	body["remoteAddr"] = req.RemoteAddr
-	body["serverProtocol"] = "HTTP/1.1"
-	body["ServerPort"] = ServingPort
-	body["https"] = false
-	body["browser"] = req.UserAgent()
+	body["id"] = 0
+	body["function"] = "setSessionInfo"
+
+	data["remoteHost"] = ""
+	data["remoteAddr"] = req.RemoteAddr
+	data["serverProtocol"] = "HTTP/1.1"
+	data["serverPort"] = ServingPort
+	data["https"] = false
+	data["browser"] = req.UserAgent()
+
+	body["data"] = data
 
 	bodyJSON, err := json.Marshal(body)
 
@@ -72,19 +78,26 @@ func setSessionInfo(input string, req *http.Request) {
 		log.Panic(err)
 	}
 
-	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
-	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
-	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
-	var binBuff bytes.Buffer
+	var headerBinBuff bytes.Buffer
 	var header ConnectionMessageHeader
 	header.id = 0
-	header.length = 10
+	header.length = uint32(len(bodyStr) + len(input) + 1)
 	header.version = 1
-	fmt.Printf("header.id: %d\n", header.id)
-	binary.Write(&binBuff, binary.LittleEndian, header)
-	c.Write(binBuff.Bytes())
+	fmt.Printf("Msd len: %d\n", header.length)
+	binary.Write(&headerBinBuff, binary.LittleEndian, header)
+	sendBytes := headerBinBuff.Bytes()
+	sendBytes = append(sendBytes, []byte(input)...)
+	sendBytes = append(sendBytes, []byte("\t")...)
+	sendBytes = append(sendBytes, []byte(bodyStr)...)
+	c.Write(sendBytes)
 
-	fmt.Fprintf(c, "%s\t%s\n", input, bodyStr)
+	response := make([]byte, 2048)
+	_, err = c.Read(response)
+	if err != nil {
+		log.Panic(err)
+	}
+	fmt.Printf("\nResponse:\n%s\n\n", string(response))
+	//w.Write(c.Read)
 }
 
 func getPOSTHandler() RequestHandler {
@@ -101,7 +114,7 @@ func getPOSTHandler() RequestHandler {
 		cookie := req.Header["Cookie"]
 		if len(cookie) == 0 { // remember, cookie is []string
 			newCookie := genSessionID()
-			setSessionInfo(newCookie, req)
+			setSessionInfo(newCookie, req, w)
 			//w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
 		} else {
 			fmt.Printf("Cookie: %s\n", cookie)
