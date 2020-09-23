@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -26,6 +28,12 @@ type SessionJson struct {
 	serverPort     string
 	https          bool
 	browser        string
+}
+
+type ConnectionMessageHeader struct {
+	length  uint64
+	version int16
+	id      int64
 }
 
 type RequestHandler func(w http.ResponseWriter, req *http.Request)
@@ -64,6 +72,18 @@ func setSessionInfo(input string, req *http.Request) {
 		log.Panic(err)
 	}
 
+	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
+	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
+	// c.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
+	var binBuff bytes.Buffer
+	var header ConnectionMessageHeader
+	header.id = 0
+	header.length = 10
+	header.version = 1
+	fmt.Printf("header.id: %d\n", header.id)
+	binary.Write(&binBuff, binary.LittleEndian, header)
+	c.Write(binBuff.Bytes())
+
 	fmt.Fprintf(c, "%s\t%s\n", input, bodyStr)
 }
 
@@ -82,7 +102,7 @@ func getPOSTHandler() RequestHandler {
 		if len(cookie) == 0 { // remember, cookie is []string
 			newCookie := genSessionID()
 			setSessionInfo(newCookie, req)
-			w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
+			//w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
 		} else {
 			fmt.Printf("Cookie: %s\n", cookie)
 		}
