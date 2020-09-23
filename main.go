@@ -42,13 +42,44 @@ func genSessionID() string {
 	return "0123456789abcdef"
 }
 
+func performRequest(session string, input string) string {
+	fmt.Printf("Buffer request: %s\n\n", input)
+	c, err := net.Dial("tcp", "127.0.0.1:4444")
+	if err != nil {
+		log.Panic(err)
+	}
+
+	var headerBinBuff bytes.Buffer
+	var header ConnectionMessageHeader
+	header.id = 0
+	header.length = uint32(len(input) + len(session) + 1)
+	header.version = 1
+	fmt.Printf("Msd len: %d\n", header.length)
+	binary.Write(&headerBinBuff, binary.LittleEndian, header)
+	sendBytes := headerBinBuff.Bytes()
+	sendBytes = append(sendBytes, []byte(session)...)
+	sendBytes = append(sendBytes, []byte("\t")...)
+	sendBytes = append(sendBytes, []byte(input)...)
+	c.Write(sendBytes)
+
+	response := make([]byte, 2048)
+	_, err = c.Read(response)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	respStr := string(response)
+	fmt.Printf("\nResponse:\n%s\n\n", respStr)
+	return string(respStr)
+}
+
 func decodeInput(input []byte) string {
 	ret := string(input)
 	fmt.Printf("\n%s\n\n", ret)
 	return ret
 }
 
-func setSessionInfo(input string, req *http.Request, w http.ResponseWriter) {
+func setSessionInfo(session string, req *http.Request, w http.ResponseWriter) bool {
 	body := make(map[string]interface{})
 	data := make(map[string]interface{})
 
@@ -68,35 +99,19 @@ func setSessionInfo(input string, req *http.Request, w http.ResponseWriter) {
 
 	if err != nil {
 		log.Fatal(err)
-		return
+		return false
 	}
 
 	bodyStr := string(bodyJSON)
-	fmt.Printf("Buffer request: %s\n\n", bodyStr)
-	c, err := net.Dial("tcp", "127.0.0.1:4444")
-	if err != nil {
-		log.Panic(err)
+	response := performRequest(session, bodyStr)
+	respJson := make(map[string]interface{})
+	err = json.Unmarshal([]byte(response[1:]), &respJson)
+	fmt.Println(respJson["resultCode"])
+	if respJson["resultCode"].(int) == 0 {
+		return true
 	}
 
-	var headerBinBuff bytes.Buffer
-	var header ConnectionMessageHeader
-	header.id = 0
-	header.length = uint32(len(bodyStr) + len(input) + 1)
-	header.version = 1
-	fmt.Printf("Msd len: %d\n", header.length)
-	binary.Write(&headerBinBuff, binary.LittleEndian, header)
-	sendBytes := headerBinBuff.Bytes()
-	sendBytes = append(sendBytes, []byte(input)...)
-	sendBytes = append(sendBytes, []byte("\t")...)
-	sendBytes = append(sendBytes, []byte(bodyStr)...)
-	c.Write(sendBytes)
-
-	response := make([]byte, 2048)
-	_, err = c.Read(response)
-	if err != nil {
-		log.Panic(err)
-	}
-	fmt.Printf("\nResponse:\n%s\n\n", string(response))
+	return false
 	//w.Write(c.Read)
 }
 
@@ -113,9 +128,9 @@ func getPOSTHandler() RequestHandler {
 		fmt.Println("0")
 		cookie := req.Header["Cookie"]
 		if len(cookie) == 0 { // remember, cookie is []string
-			newCookie := genSessionID()
-			setSessionInfo(newCookie, req, w)
-			//w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
+			cookie = append(cookie, genSessionID())
+			setSessionInfo(cookie[0], req, w)
+
 		} else {
 			fmt.Printf("Cookie: %s\n", cookie)
 		}
@@ -123,6 +138,10 @@ func getPOSTHandler() RequestHandler {
 
 		decodedInput := decodeInput(input)
 		fmt.Printf("decodedInput: %s\n\n", decodedInput)
+
+		response := performRequest(cookie[0], string(decodedInput))
+		w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
+		w.Write([]byte(response))
 	}
 }
 
