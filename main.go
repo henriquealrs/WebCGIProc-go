@@ -10,6 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+
+	"WebCGIProc-go/github.com/augustoroman/hexdump"
 )
 
 const ServingPort int = 8000
@@ -62,14 +65,15 @@ func performRequest(session string, input string) string {
 	sendBytes = append(sendBytes, []byte(input)...)
 	c.Write(sendBytes)
 
-	response := make([]byte, 2048)
-	_, err = c.Read(response)
+	response := make([]byte, 2048*4)
+	n, err := c.Read(response)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	respStr := string(response)
-	fmt.Printf("\nResponse:\n%s\n\n", respStr)
+	respStr := string(response[12 : n-1])
+	fmt.Printf("\nResponse:\n%s\n\n", response[12:n-1])
+	fmt.Println(hexdump.Dump(response[:n-1]))
 	return string(respStr)
 }
 
@@ -107,12 +111,25 @@ func setSessionInfo(session string, req *http.Request, w http.ResponseWriter) bo
 	respJson := make(map[string]interface{})
 	err = json.Unmarshal([]byte(response[1:]), &respJson)
 	fmt.Println(respJson["resultCode"])
-	if respJson["resultCode"].(int) == 0 {
-		return true
-	}
+	// if respJson["resultCode"].(int) == 0 {
+	// 	return true
+	// }
+	dumpMap("", respJson)
 
 	return false
 	//w.Write(c.Read)
+}
+
+func dumpMap(space string, m map[string]interface{}) {
+	for k, v := range m {
+		if mv, ok := v.(map[string]interface{}); ok {
+			fmt.Printf("{ \"%v\": \n", k)
+			dumpMap(space+"\t", mv)
+			fmt.Printf("}\n")
+		} else {
+			fmt.Printf("%v %v : %v\n", space, k, v)
+		}
+	}
 }
 
 func getPOSTHandler() RequestHandler {
@@ -126,21 +143,30 @@ func getPOSTHandler() RequestHandler {
 			return
 		}
 		fmt.Println("0")
-		cookie := req.Header["Cookie"]
-		if len(cookie) == 0 { // remember, cookie is []string
-			cookie = append(cookie, genSessionID())
-			setSessionInfo(cookie[0], req, w)
-
-		} else {
+		cookies := req.Header["Cookie"]
+		sessionId := ""
+		for _, cookie := range cookies {
 			fmt.Printf("Cookie: %s\n", cookie)
+			if strings.HasPrefix(cookie, "mobile-access-session-id=") {
+				sessionId = cookie[strings.Index(cookie, "=")+1:]
+			}
 		}
-		//cookie[0] = genSessionID()
+		if sessionId == "" {
+			sessionId = genSessionID()
+			cookies = append(cookies, sessionId)
+			setSessionInfo(cookies[0], req, w)
+			w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookies[0]))
+		}
+
+		fmt.Println("SessionId = " + sessionId)
 
 		decodedInput := decodeInput(input)
 		fmt.Printf("decodedInput: %s\n\n", decodedInput)
 
-		response := performRequest(cookie[0], string(decodedInput))
-		w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookie))
+		response := performRequest(sessionId, string(decodedInput))
+		respJson := make(map[string]interface{})
+		err = json.Unmarshal([]byte(response[1:]), &respJson)
+		dumpMap("", respJson)
 		w.Write([]byte(response))
 	}
 }
