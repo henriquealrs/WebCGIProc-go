@@ -34,15 +34,24 @@ type SessionJson struct {
 }
 
 type ConnectionMessageHeader struct {
-	length  uint32
-	version int32
-	id      int32
+	Length  uint32
+	Version int32
+	Id      int32
 }
+
+type JsonObject = map[string]interface{}
 
 type RequestHandler func(w http.ResponseWriter, req *http.Request)
 
 func genSessionID() string {
 	return "0123456789abcdef"
+}
+
+func IsSetSessionInfoRequired(body JsonObject) bool {
+	if function, ok := body["function"]; ok {
+		return function == "isLogged" || function == "logon"
+	}
+	return false
 }
 
 func performRequest(session string, input string) string {
@@ -52,12 +61,13 @@ func performRequest(session string, input string) string {
 		log.Panic(err)
 	}
 
+	headerLen := uint32(3 * 32 / 8)
 	var headerBinBuff bytes.Buffer
 	var header ConnectionMessageHeader
-	header.id = 0
-	header.length = uint32(len(input) + len(session) + 1)
-	header.version = 1
-	fmt.Printf("Msd len: %d\n", header.length)
+	header.Id = 0
+	header.Length = uint32(len(input) + len(session) + 1)
+	header.Version = 1
+	fmt.Printf("Msd len: %d\n", header.Length)
 	binary.Write(&headerBinBuff, binary.LittleEndian, header)
 	sendBytes := headerBinBuff.Bytes()
 	sendBytes = append(sendBytes, []byte(session)...)
@@ -65,15 +75,34 @@ func performRequest(session string, input string) string {
 	sendBytes = append(sendBytes, []byte(input)...)
 	c.Write(sendBytes)
 
-	response := make([]byte, 2048*4)
-	n, err := c.Read(response)
+	response := make([]byte, 2048*8)
+
+	nTotal := uint32(0)
+	for nTotal < headerLen {
+		n, err := c.Read(response[nTotal:])
+		if err != nil {
+			log.Panic(err)
+		}
+		nTotal += uint32(n)
+	}
+	var respHeader ConnectionMessageHeader
+	err = binary.Read(bytes.NewBuffer(response), binary.LittleEndian, &respHeader)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	respStr := string(response[12 : n-1])
-	fmt.Printf("\nResponse:\n%s\n\n", response[12:n-1])
-	fmt.Println(hexdump.Dump(response[:n-1]))
+	for nTotal < (headerLen + respHeader.Length) {
+		fmt.Printf("%d < %d\n", nTotal, (headerLen + respHeader.Length))
+		n, err := c.Read(response[nTotal:])
+		if err != nil {
+			log.Panic(err)
+		}
+		nTotal += uint32(n)
+	}
+
+	respStr := string(response[headerLen:nTotal])
+	fmt.Printf("\nResponse:\n%s\n\n", respStr)
+	fmt.Println(hexdump.Dump(response[:nTotal]))
 	return string(respStr)
 }
 
@@ -114,8 +143,6 @@ func setSessionInfo(session string, req *http.Request, w http.ResponseWriter) bo
 	// if respJson["resultCode"].(int) == 0 {
 	// 	return true
 	// }
-	dumpMap("", respJson)
-
 	return false
 	//w.Write(c.Read)
 }
@@ -142,11 +169,18 @@ func getPOSTHandler() RequestHandler {
 			log.Fatal(err)
 			return
 		}
-		fmt.Println("0")
+
+		inputJson := make(JsonObject)
+		err = json.Unmarshal(input, &inputJson)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			log.Fatal(err)
+			return
+		}
+
 		cookies := req.Header["Cookie"]
 		sessionId := ""
 		for _, cookie := range cookies {
-			fmt.Printf("Cookie: %s\n", cookie)
 			if strings.HasPrefix(cookie, "mobile-access-session-id=") {
 				sessionId = cookie[strings.Index(cookie, "=")+1:]
 			}
@@ -155,7 +189,16 @@ func getPOSTHandler() RequestHandler {
 			sessionId = genSessionID()
 			cookies = append(cookies, sessionId)
 			setSessionInfo(cookies[0], req, w)
-			w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s", cookies[0]))
+			w.Header().Add("Set-Cookie", fmt.Sprintf("mobile-access-session-id=%s;HttpOnly", cookies[0]))
+		} else {
+			i := strings.Index(sessionId, ";")
+			if i != -1 {
+				sessionId = sessionId[i+2:]
+			}
+			if IsSetSessionInfoRequired(inputJson) && len(sessionId) > 0 {
+				fmt.Printf("SessionIdConfig = %s\n", sessionId)
+				setSessionInfo(sessionId, req, w)
+			}
 		}
 
 		fmt.Println("SessionId = " + sessionId)
@@ -164,9 +207,6 @@ func getPOSTHandler() RequestHandler {
 		fmt.Printf("decodedInput: %s\n\n", decodedInput)
 
 		response := performRequest(sessionId, string(decodedInput))
-		respJson := make(map[string]interface{})
-		err = json.Unmarshal([]byte(response[1:]), &respJson)
-		dumpMap("", respJson)
 		w.Write([]byte(response))
 	}
 }
